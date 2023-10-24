@@ -1,0 +1,192 @@
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: ebpf-exporter
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: ebpf-exporter-robot
+  namespace: ebpf-exporter
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: ebpf-exporter-priv
+subjects:
+  - kind: ServiceAccount
+    name: ebpf-exporter-robot
+    namespace: ebpf-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: 'system:openshift:scc:privileged'
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: ebpf-exporter
+  namespace: ebpf-exporter
+  labels:
+    app: ebpf-exporter
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-exporter
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: ebpf-exporter
+    spec:
+      restartPolicy: Always
+      serviceAccountName: ebpf-exporter-robot
+      hostPID: true
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      securityContext: {}
+      containers:
+        - resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 200m
+              memory: 128Mi
+          terminationMessagePath: /dev/termination-log
+          name: ebpf-exporter
+          securityContext:
+            capabilities:
+              add:
+                - SYS_ADMIN
+            privileged: true
+            allowPrivilegeEscalation: true
+          ports:
+            - containerPort: 9435
+              protocol: TCP
+              name: metrics
+          imagePullPolicy: IfNotPresent
+          command:
+          - /ebpf_exporter
+          - --config.dir=/examples
+          # Comma separated names of configs to load
+          - --config.names=biolatency
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+            - name: kernel-src
+              mountPath: /usr/src/kernels
+            - name: kernel-debug
+              mountPath: /sys/kernel/debug
+          terminationMessagePolicy: File
+          image: quay.io/mulbc/cf-ebpf-exporter:latest
+      serviceAccount: ebpf-exporter-robot
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+            type: ''
+        - name: sys
+          hostPath:
+            path: /sys
+            type: ''
+        - name: kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+            type: ''
+        - name: kernel-src
+          hostPath:
+            path: /usr/src/kernels
+            type: ''
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: ''
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: ''
+      dnsPolicy: Default
+      tolerations:
+        - operator: Exists
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  revisionHistoryLimit: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ebpf-exporter
+  namespace: ebpf-exporter
+spec:
+  selector:
+    app: ebpf-exporter
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9435
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ebpf-exporter
+  namespace: openshift-monitoring
+spec:
+  endpoints:
+    - interval: 5s
+      path: /metrics
+      port: metrics
+      scheme: http
+  namespaceSelector:
+    matchNames:
+      - ebpf-exporter
+  selector: {}
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: prometheus-k8s
+  namespace: ebpf-exporter
+rules:
+  - verbs:
+      - get
+      - list
+      - watch
+    apiGroups:
+      - ''
+    resources:
+      - services
+      - endpoints
+      - pods
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: prometheus-k8s
+  namespace: ebpf-exporter
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: openshift-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-k8s
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cluster-monitoring-operator
+  namespace: ebpf-exporter
+subjects:
+  - kind: ServiceAccount
+    name: cluster-monitoring-operator
+    namespace: openshift-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-operator-namespaced
